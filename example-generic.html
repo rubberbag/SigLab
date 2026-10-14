@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Vibration Analysis</title>
+
+<style>
+    * { box-sizing: border-box; }
+
+    body {
+        margin: 0;
+        padding: 24px;
+        background: #f1f3f5;
+        font-family: Arial, sans-serif;
+        color: #222;
+    }
+
+    .dashboard {
+        max-width: 1200px;
+        margin: auto;
+        display: grid;
+        gap: 22px;
+    }
+
+    .panel {
+        background: #fff;
+        padding: 18px;
+        border: 1px solid #e1e4e8;
+        border-radius: 12px;
+        min-width: 0;
+    }
+
+    .panel h2 {
+        font-size: 18px;
+        margin: 0 0 8px;
+    }
+
+    .hint {
+        font-size: 12px;
+        color: #6b7280;
+        margin-bottom: 12px;
+    }
+
+    canvas {
+        display: block;
+        width: 100%;
+        height: 330px;
+        cursor: crosshair;
+        touch-action: none;
+    }
+
+    .toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 12px;
+    }
+
+    button {
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        background: white;
+        padding: 8px 12px;
+        cursor: pointer;
+    }
+
+    button:hover { background: #f3f4f6; }
+
+    .status {
+        font-size: 12px;
+        color: #6b7280;
+        margin-top: 10px;
+    }
+</style>
+</head>
+
+<body>
+<div class="dashboard">
+
+    <section class="panel">
+        <h2>Time-Domain Waveform</h2>
+        <div class="hint">
+            Amplitude against time · Drag to pan · Scroll to zoom
+        </div>
+
+        <canvas id="waveform"></canvas>
+
+        <div class="toolbar">
+            <button onclick="waveChart.reset()">Reset view</button>
+            <button onclick="waveChart.followLatest()">Follow latest</button>
+        </div>
+
+        <div class="status" id="waveStatus">Waiting for sensor data</div>
+    </section>
+
+    <section class="panel">
+        <h2>FFT Spectrum</h2>
+        <div class="hint">
+            Amplitude against frequency · Drag to pan · Scroll to zoom
+        </div>
+
+        <canvas id="spectrum"></canvas>
+
+        <div class="toolbar">
+            <button onclick="fftChart.reset()">Reset view</button>
+        </div>
+
+        <div class="status" id="fftStatus">
+            Waiting for enough samples to calculate FFT
+        </div>
+    </section>
+
+</div>
+
+<script>
+// =====================================================
+// GENERAL INTERACTIVE CHART
+// =====================================================
+
+class LiveChart {
+    constructor(canvasId, options) {
+        this.canvas = document.getElementById(canvasId);
+        this.ctx = this.canvas.getContext("2d");
+        this.options = options;
+
+        this.points = [];
+
+        this.view = {
+            xMin: options.xMin,
+            xMax: options.xMax,
+            yMin: options.yMin,
+            yMax: options.yMax
+        };
+
+        this.dragging = false;
+        this.lastPointer = null;
+        this.follow = options.follow || false;
+
+        this.resize();
+
+        new ResizeObserver(() => {
+            this.resize();
+            this.draw();
+        }).observe(this.canvas);
+
+        this.canvas.addEventListener(
+            "pointerdown", e => this.pointerDown(e)
+        );
+
+        this.canvas.addEventListener(
+            "pointermove", e => this.pointerMove(e)
+        );
+
+        this.canvas.addEventListener(
+            "pointerup", () => this.pointerUp()
+        );
+
+        this.canvas.addEventListener(
+            "pointercancel", () => this.pointerUp()
+        );
+
+        this.canvas.addEventListener(
+            "wheel", e => this.zoom(e), { passive: false }
+        );
+
+        this.draw();
+    }
+
+    resize() {
+        const rect = this.canvas.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
+
+        this.canvas.width = Math.round(rect.width * dpr);
+        this.canvas.height = Math.round(rect.height * dpr);
+
+        this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        this.width = rect.width;
+        this.height = rect.height;
+
+        this.margin = { left: 65, right: 18, top: 18, bottom: 48 };
+        this.plotW = this.width - this.margin.left - this.margin.right;
+        this.plotH = this.height - this.margin.top - this.margin.bottom;
+    }
+
+    setPoints(points) {
+        this.points = points;
+
+        if (this.follow && points.length) {
+            const lastX = points[points.length - 1].x;
+            const span = this.view.xMax - this.view.xMin;
+
+            this.view.xMax = lastX;
+            this.view.xMin = lastX - span;
+        }
+
+        this.draw();
+    }
+
+    setYRange(min, max) {
+        if (!Number.isFinite(min) || !Number.isFinite(max) || min >= max) {
+            return;
+        }
+
+        this.view.yMin = min;
+        this.view.yMax = max;
+    }
+
+    reset() {
+        this.follow = false;
+
+        this.view = {
+            xMin: this.options.xMin,
+            xMax: this.options.xMax,
+            yMin: this.options.yMin,
+            yMax: this.options.yMax
+        };
+
+        this.draw();
+    }
+
+    followLatest() {
+        this.follow = true;
+        this.draw();
+    }
+
+    px(x) {
+        return this.margin.left +
+            (x - this.view.xMin) /
+            (this.view.xMax - this.view.xMin) * this.plotW;
+    }
+
+    py(y) {
+        return this.margin.top +
+            (this.view.yMax - y) /
+            (this.view.yMax - this.view.yMin) * this.plotH;
+    }
+
+    draw() {
+        if (!this.ctx || !this.width) return;
+
+        const ctx = this.ctx;
+        const m = this.margin;
+
+        ctx.clearRect(0, 0, this.width, this.height);
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, this.width, this.height);
+
+        // Grid and axis labels
+        ctx.font = "12px Arial";
+        ctx.fillStyle = "#555";
+        ctx.strokeStyle = "#dedede";
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+
+        const xStep = this.tickStep(
+            this.view.xMax - this.view.xMin
+        );
+
+        const yStep = this.tickStep(
+            this.view.yMax - this.view.yMin
+        );
+
+        const firstX = Math.ceil(this.view.xMin / xStep) * xStep;
+
+        for (let x = firstX; x <= this.view.xMax; x += xStep) {
+            const px = this.px(x);
+
+            ctx.beginPath();
+            ctx.moveTo(px, m.top);
+            ctx.lineTo(px, this.height - m.bottom);
+            ctx.stroke();
+
+            ctx.textAlign = "center";
+            ctx.textBaseline = "top";
+            ctx.fillText(this.format(x), px, this.height - m.bottom + 8);
+        }
+
+        const firstY = Math.ceil(this.view.yMin / yStep) * yStep;
+
+        for (let y = firstY; y <= this.view.yMax; y += yStep) {
+            const py = this.py(y);
+
+            ctx.beginPath();
+            ctx.moveTo(m.left, py);
+            ctx.lineTo(this.width - m.right, py);
+            ctx.stroke();
+
+            ctx.textAlign = "right";
+            ctx.textBaseline = "middle";
+            ctx.fillText(this.format(y), m.left - 8, py);
+        }
+
+        ctx.setLineDash([]);
+
+        // Plot border
+        ctx.strokeStyle = "#333";
+        ctx.strokeRect(
+            m.left, m.top, this.plotW, this.plotH
+        );
+
+        // Clip the signal to the plotting region
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(m.left, m.top, this.plotW, this.plotH);
+        ctx.clip();
+
+        ctx.strokeStyle = this.options.color;
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+
+        let started = false;
+        let previousX = null;
+
+        for (const point of this.points) {
+            if (
+                point.x < this.view.xMin ||
+                point.x > this.view.xMax
+            ) {
+                continue;
+            }
+
+            const x = this.px(point.x);
+            const y = this.py(point.y);
+
+            if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+
+            // Break the line at gaps rather than connecting
+            // unrelated points across missing data.
+            if (previousX !== null && x - previousX >
+                Math.max(3, this.plotW * 0.04)) {
+                started = false;
+            }
+
+            if (!started) {
+                ctx.moveTo(x, y);
+                started = true;
+            } else {
+                ctx.lineTo(x, y);
+            }
+
+            previousX = x;
+        }
+
+        ctx.stroke();
+        ctx.restore();
+
+        // Axis titles
+        ctx.fillStyle = "#222";
+        ctx.font = "13px Arial";
+        ctx.textAlign = "center";
+        ctx.fillText(
+            this.options.xLabel,
+            m.left + this.plotW / 2,
+            this.height - 5
+        );
+
+        ctx.save();
+        ctx.translate(15, m.top + this.plotH / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.fillText(this.options.yLabel, 0, 0);
+        ctx.restore();
+    }
+
+    tickStep(span) {
+        const rough = span / 6;
+        const power = Math.pow(10, Math.floor(Math.log10(rough || 1)));
+        const fraction = rough / power;
+
+        const nice = fraction <= 1 ? 1 :
+                     fraction <= 2 ? 2 :
+                     fraction <= 5 ? 5 : 10;
+
+        return nice * power;
+    }
+
+    format(value) {
+        if (Math.abs(value) < 0.0001 && value !== 0) {
+            return value.toExponential(1);
+        }
+
+        return Number(value.toPrecision(4)).toString();
+    }
+
+    pointerDown(e) {
+        this.dragging = true;
+        this.lastPointer = { x: e.offsetX, y: e.offsetY };
+        this.follow = false;
+        this.canvas.setPointerCapture(e.pointerId);
+    }
+
+    pointerMove(e) {
+        if (!this.dragging || !this.lastPointer) return;
+
+        const dx = e.offsetX - this.lastPointer.x;
+        const dy = e.offsetY - this.lastPointer.y;
+
+        const xSpan = this.view.xMax - this.view.xMin;
+        const ySpan = this.view.yMax - this.view.yMin;
+
+        this.view.xMin -= dx / this.plotW * xSpan;
+        this.view.xMax -= dx / this.plotW * xSpan;
+
+        this.view.yMin += dy / this.plotH * ySpan;
+        this.view.yMax += dy / this.plotH * ySpan;
+
+        this.lastPointer = { x: e.offsetX, y: e.offsetY };
+        this.draw();
+    }
+
+    pointerUp() {
+        this.dragging = false;
+        this.lastPointer = null;
+    }
+
+    zoom(e) {
+        e.preventDefault();
+
+        const factor = e.deltaY < 0 ? 0.85 : 1.18;
+        const rect = this.canvas.getBoundingClientRect();
+
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        const xAtMouse = this.view.xMin +
+            (mouseX - this.margin.left) / this.plotW *
+            (this.view.xMax - this.view.xMin);
+
+        const yAtMouse = this.view.yMax -
+            (mouseY - this.margin.top) / this.plotH *
+            (this.view.yMax - this.view.yMin);
+
+        this.view.xMin = xAtMouse -
+            (xAtMouse - this.view.xMin) * factor;
+
+        this.view.xMax = xAtMouse +
+            (this.view.xMax - xAtMouse) * factor;
+
+        this.view.yMin = yAtMouse -
+            (yAtMouse - this.view.yMin) * factor;
+
+        this.view.yMax = yAtMouse +
+            (this.view.yMax - yAtMouse) * factor;
+
+        this.follow = false;
+        this.draw();
+    }
+}
+
+
+// =====================================================
+// FFT: RADIX-2 FAST FOURIER TRANSFORM
+// =====================================================
+
+function calculateFFT(samples, sampleRate) {
+    const n = samples.length;
+
+    if (
+        n < 2 ||
+        (n & (n - 1)) !== 0 ||
+        !Number.isFinite(sampleRate) ||
+        sampleRate <= 0
+    ) {
+        return [];
+    }
+
+    const real = new Float64Array(n);
+    const imag = new Float64Array(n);
+
+    // Remove DC offset and apply a Hann window.
+    const mean = samples.reduce((sum, v) => sum + v, 0) / n;
+
+    for (let i = 0; i < n; i++) {
+        const hann = 0.5 * (
+            1 - Math.cos(2 * Math.PI * i / (n - 1))
+        );
+
+        real[i] = (samples[i] - mean) * hann;
+    }
+
+    // Bit-reversal permutation
+    let j = 0;
+
+    for (let i = 1; i < n; i++) {
+        let bit = n >> 1;
+
+        while (j & bit) {
+            j ^= bit;
+            bit >>= 1;
+        }
+
+        j ^= bit;
+
+        if (i < j) {
+            [real[i], real[j]] = [real[j], real[i]];
+            [imag[i], imag[j]] = [imag[j], imag[i]];
+        }
+    }
+
+    // FFT butterfly stages
+    for (let size = 2; size <= n; size *= 2) {
+        const half = size / 2;
+        const angle = -2 * Math.PI / size;
+        const wStepR = Math.cos(angle);
+        const wStepI = Math.sin(angle);
+
+        for (let start = 0; start < n; start += size) {
+            let wr = 1;
+            let wi = 0;
+
+            for (let k = 0; k < half; k++) {
+                const even = start + k;
+                const odd = even + half;
+
+                const tr = wr * real[odd] - wi * imag[odd];
+                const ti = wr * imag[odd] + wi * real[odd];
+
+                real[odd] = real[even] - tr;
+                imag[odd] = imag[even] - ti;
+
+                real[even] += tr;
+                imag[even] += ti;
+
+                const nextWr = wr * wStepR - wi * wStepI;
+                wi = wr * wStepI + wi * wStepR;
+                wr = nextWr;
+            }
+        }
+    }
+
+    // Single-sided amplitude spectrum.
+    const result = [];
+
+    for (let k = 0; k <= n / 2; k++) {
+        let amplitude = Math.hypot(real[k], imag[k]) / n;
+
+        // Hann window coherent-gain correction.
+        amplitude *= 2 / 0.5;
+
+        // DC and Nyquist are not doubled.
+        if (k === 0 || k === n / 2) {
+            amplitude /= 2;
+        }
+
+        result.push({
+            x: k * sampleRate / n,
+            y: amplitude
+        });
+    }
+
+    return result;
+}
+
+
+// =====================================================
+// CREATE THE TWO GRAPHS
+// =====================================================
+
+const waveChart = new LiveChart("waveform", {
+    xMin: 0,
+    xMax: 5,
+    yMin: -2,
+    yMax: 2,
+    xLabel: "Time (s)",
+    yLabel: "Amplitude",
+    color: "#1683df",
+    follow: true
+});
+
+const fftChart = new LiveChart("spectrum", {
+    xMin: 0,
+    xMax: 100,
+    yMin: 0,
+    yMax: 1,
+    xLabel: "Frequency (Hz)",
+    yLabel: "Amplitude",
+    color: "#ed8735"
+});
+
+
+// =====================================================
+// PUBLIC DATA INPUT API
+// =====================================================
+
+const HISTORY_SECONDS = 300;
+const FFT_SIZE = 1024;
+
+let sampleRate = 1000;
+let totalSamples = 0;
+let sampleHistory = [];
+let lastFFTCount = 0;
+
+// Call this when your stream starts or its sample rate changes.
+function configureStream(newSampleRate) {
+    if (!Number.isFinite(newSampleRate) || newSampleRate <= 0) {
+        throw new Error("Sample rate must be positive.");
+    }
+
+    sampleRate = newSampleRate;
+    totalSamples = 0;
+    sampleHistory = [];
+    lastFFTCount = 0;
+
+    waveChart.setPoints([]);
+    fftChart.setPoints([]);
+
+    waveChart.view.xMin = 0;
+    waveChart.view.xMax = 5;
+    waveChart.follow = true;
+
+    fftChart.view.xMin = 0;
+    fftChart.view.xMax = sampleRate / 2;
+
+    waveChart.draw();
+    fftChart.draw();
+}
+
+// Call this with actual raw sensor samples.
+function pushSamples(values) {
+    if (!Array.isArray(values) || values.length === 0) return;
+
+    const startIndex = totalSamples;
+    const incoming = [];
+
+    for (let i = 0; i < values.length; i++) {
+        const value = Number(values[i]);
+
+        if (!Number.isFinite(value)) continue;
+
+        const time = (startIndex + i) / sampleRate;
+
+        sampleHistory.push({ x: time, y: value });
+        incoming.push(value);
+    }
+
+    totalSamples += values.length;
+
+    // Retain waveform history in memory.
+    // Adjust this policy if you need unlimited history.
+    const newestTime = totalSamples / sampleRate;
+    const cutoff = newestTime - HISTORY_SECONDS;
+
+    while (
+        sampleHistory.length &&
+        sampleHistory[0].x < cutoff
+    ) {
+        sampleHistory.shift();
+    }
+
+    waveChart.setPoints(sampleHistory);
+
+    document.getElementById("waveStatus").textContent =
+        `${totalSamples} samples received · ${sampleRate} samples/s`;
+
+    // Calculate FFT using the latest complete window.
+    // This runs only after enough new samples have arrived.
+    if (
+        totalSamples >= FFT_SIZE &&
+        totalSamples - lastFFTCount >= FFT_SIZE / 4
+    ) {
+        const latest = sampleHistory
+            .slice(-FFT_SIZE)
+            .map(point => point.y);
+
+        if (latest.length === FFT_SIZE) {
+            const fftPoints = calculateFFT(latest, sampleRate);
+
+            fftChart.setPoints(fftPoints);
+
+            // Autoscale the FFT amplitude axis.
+            const maxAmplitude = Math.max(
+                0,
+                ...fftPoints.map(point => point.y)
+            );
+
+            fftChart.setYRange(
+                0,
+                Math.max(0.001, maxAmplitude * 1.15)
+            );
+
+            document.getElementById("fftStatus").textContent =
+                `FFT size: ${FFT_SIZE} · Resolution: ` +
+                `${(sampleRate / FFT_SIZE).toFixed(3)} Hz`;
+
+            lastFFTCount = totalSamples;
+        }
+    }
+}
+
+// Expose functions for integration with your frontend.
+window.vibrationGraphs = {
+    configureStream,
+    pushSamples,
+    waveChart,
+    fftChart
+};
+
+// Initial sample rate; replace this with your sensor's actual rate.
+configureStream(1000);
+</script>
+</body>
+</html>
