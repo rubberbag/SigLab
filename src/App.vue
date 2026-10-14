@@ -40,13 +40,9 @@ import GridSection from './components/GridSection.vue';
   margin-top: 20px;
 }
 
-.title{
-  background: #546f2d;
-  width: 50%;
-}
 
 .title h1{
-  color:white !important;
+  text-align: center;
   padding-inline:35px;
   padding-block:3px;
 }

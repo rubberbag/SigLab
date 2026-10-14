@@ -1,50 +1,60 @@
 <template>
-    <div class="status-bagde">
-        <span class="hostname">{{"protocol"}}://{{ "host" }}:{{ "port" }}</span>
-        <span class="status">DCNT</span>
-    </div>
+  <div class="status-badge">
+    <span class="hostname">ws://{{ url }}</span>
+    <span class="status" :class="{ connected }">
+      {{ connected ? 'CNTD' : 'DCNT' }}
+    </span>
+  </div>
 </template>
 
+<script setup>
+defineProps({
+  url: {
+    type: String,
+    default: 'localhost:XXXX'
+  },
+  connected: {
+    type: Boolean,
+    default: false
+  }
+})
+</script>
+
 <style scoped>
-.status-badge{
-    width:400px ;
-    height: 50px;
-  
-    overflow: hidden;
+.status-badge {
+  display: flex;
+  width: auto;
+  height: 25px;
+  overflow: hidden;
 }
 
-.hostname{
-    width:250px;
-
-    align-items: center;
-    box-sizing: border-box;
-
-    padding-inline:10px;
-    padding-block: 2px;
-
-    background: #686868;
-    font : 20px;
-    letter-spacing: 1px;
-
-    color: #fff !important;
-    letter-spacing: 2px;
+.hostname {
+  width: 250px;
+  padding: 2px 10px;
+  box-sizing: border-box;
+  background: #686868;
+  color: white;
+  font-size: 16px;
+  letter-spacing: 1px;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
-.status{
-    width: 150px;
-    align-items: center;
-    justify-content: center;
-    box-sizing:  border-box;
+.status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 150px;
+  padding: 2px 5px;
+  box-sizing: border-box;
+  background: red;
+  color: white;
+  border-left: 2px solid #aaa;
+  font-size: 16px;
+  font-weight: 700;
+}
 
-    padding-inline:5px;
-    padding-block: 2px;
-
-    background: red;
-    color:#fff !important;
-    border-left: 2px solid #aaa;
-
-    font: 20px;
-    font-weight: 700;
-    letter-spacing: 2px;
+.status.connected {
+  background: green;
 }
 </style>

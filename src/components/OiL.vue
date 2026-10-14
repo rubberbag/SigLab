@@ -1,11 +1,8 @@
 <template>
     <div class="brand-label">
         <div class="brand">
-            <span class="name">OSON</span>
-            <span class="lname"> INDUSTRIAL LABORATORIES</span>
-        </div>
-        <div class="tagline">
-            <span>METAL UP</span>
+            <span class="name">OSON INDUSTRIAL</span>
+            <span class="lname">LABS</span>
         </div>
     </div>
 </template>
@@ -22,7 +19,7 @@
     width:auto ;
     height: 25px;
     display: flex;
-    background: #a1a1a1; 
+    background: #a1a1a1;
 }
 
 .name, .lname{
@@ -41,21 +38,13 @@
 }
 
 .name{
-    width: auto;  
-    background: #4502ff;   
+    width: auto;
+    background: #4502ff;
 }
 
 .lname{
     width: auto;
     border-left: 2px solid #fff;
-}
-
-.tagline{
-    width: auto;
-    display:flex;
-
-    font-size: 15px;
-    padding-inline:2px ;
 }
 
 </style>
